@@ -37,11 +37,15 @@ df_products = df_products[['product_id', 'product_category_name']].fillna({'prod
 df_orders = pd.read_parquet('olist_orders_dataset.parquet', engine='pyarrow')
 
 # checando as qtd de linhas em que pelo menos uma das colunas esteja null
-qtd_linhas_null = df_orders.query("""
-                                    order_delivered_customer_date.isnull() or \
-                                    order_delivered_carrier_date.isnull() or \
-                                    order_approved_at.isnull()""") \
-                           .shape[0]
+df_orders_dts_nulls = df_orders.query("""order_delivered_customer_date.isnull() or \
+                                     order_delivered_carrier_date.isnull() or \
+                                     order_approved_at.isnull()""")
+
+# order_id sem data pra remover de todas as tabelas que tem order id
+order_id_dt_null = df_orders_dts_nulls['order_id'].unique().tolist()
+
+# qtd de registros com alguma das datas null
+qtd_linhas_null = df_orders_dts_nulls.shape[0]
 
 # qtd total de linhas do df
 total_linhas_df_orders = df_orders.shape[0]
@@ -68,11 +72,10 @@ df_order_items = pd.read_parquet('olist_order_items_dataset.parquet', engine='py
 # somando price + freight_value
 df_order_items['total_price'] = df_order_items['price'] + df_order_items['freight_value']
 
-# droppando as colunas price e freight_value e agrupando os dados
+# droppando as colunas price e freight_value, eliminando os order_ids alguma das datas e agrupando os dados
 df_order_items = df_order_items.drop(columns=['price', 'freight_value'])\
                                .groupby(by=['order_id', 'product_id', 'seller_id', 'shipping_limit_date'])['total_price'].sum()\
                                .reset_index()
-
 #%%
 # df_order_payments
 df_order_payments = pd.read_parquet('olist_order_payments_dataset.parquet', engine='pyarrow')
@@ -123,23 +126,26 @@ lista_dfs.remove('df_geolocation')
 # criando uma lista com os pedidos cancelados para dropparmos de todas as tabelas que possuem esses order_id
 orders_canceled = list(df_orders.query("order_status == 'canceled'")['order_id'])
 
+# concatenando a lista de pedidos cancelados + pedidos sem alguma das datas e convertendo pra set pra pegar valores unicos
+orders_to_remove = set(orders_canceled + order_id_dt_null)
+
 # percorrendo a lista de arquivos. a fç globals()[nome_df] nos permite acessar a variavel em que cada df está
 # armazenado. Isso nos permite acessar os dataframes a partir de seus nomes (strings) dinamicamente.
 for nome_df in lista_dfs:
     df = globals()[nome_df]
 
     if 'order_id' in df.columns:
-        df = df.query(f"order_id not in {orders_canceled}") # filtra fora os pedidos cancelados antes de carregar no banco
+        df = df.query(f"order_id not in {orders_to_remove}") # filtra fora os pedidos cancelados antes de carregar no banco
 
     # carrega para o banco fazendo o replace do prefixo 'df' por 'table_'
     df.to_sql(name=nome_df.replace("df_", "table_"), con=con, index=False, if_exists='replace')
 
-# checando se os arquivos foram carregados para o banco
-cur.execute("""SELECT
-                tbl_name
-               FROM sqlite_master
-               WHERE type = 'table'""")\
-    .fetchall()
+# # checando se os arquivos foram carregados para o banco
+# cur.execute("""SELECT
+#                 tbl_name
+#                FROM sqlite_master
+#                WHERE type = 'table'""")\
+#     .fetchall()
 
 # fechando conexao com banco
 cur.close()
